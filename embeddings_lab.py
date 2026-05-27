@@ -16,7 +16,11 @@ def build_tfidf(texts):
 
     Returns (tfidf_matrix, vectorizer).
     """
-    pass
+    vectorizer = TfidfVectorizer()
+    
+    tfidf_matrix = vectorizer.fit_transform(texts)
+    
+    return tfidf_matrix, vectorizer
 
 
 def compute_tfidf_similarity(tfidf_matrix):
@@ -24,7 +28,9 @@ def compute_tfidf_similarity(tfidf_matrix):
 
     Returns a numpy array of shape (n, n).
     """
-    pass
+    similarity_matrix = sklearn_cosine(tfidf_matrix)
+    
+    return similarity_matrix
 
 
 def load_glove(filepath):
@@ -32,7 +38,17 @@ def load_glove(filepath):
 
     Returns a dict mapping each word to a numpy array.
     """
-    pass
+    embeddings = {}
+    
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+
+            parts = line.strip().split()
+            word = parts[0]  
+            vector = np.array([float(x) for x in parts[1:]])  
+            embeddings[word] = vector
+    
+    return embeddings
 
 
 def text_to_glove(text, embeddings):
@@ -41,7 +57,17 @@ def text_to_glove(text, embeddings):
     Skip out-of-vocabulary words. If every word is OOV, return a zero
     vector of shape (50,).
     """
-    pass
+    words = text.lower().split()
+    
+    valid_vectors = []
+    for word in words:
+        if word in embeddings:
+            valid_vectors.append(embeddings[word])
+    
+    if len(valid_vectors) == 0:
+        return np.zeros(50)
+    
+    return np.mean(valid_vectors, axis=0)
 
 
 def extract_bert_embedding(text, tokenizer, model):
@@ -49,7 +75,25 @@ def extract_bert_embedding(text, tokenizer, model):
 
     Returns a numpy array of shape (768,).
     """
-    pass
+    import torch
+    
+    inputs = tokenizer(text, truncation=True, max_length=512, 
+                      return_tensors='pt', padding=True)
+    
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    last_hidden_state = outputs.last_hidden_state  # shape: (1, sequence_length, 768)
+    
+    attention_mask = inputs['attention_mask']  # shape: (1, sequence_length)
+    
+    masked_embeddings = last_hidden_state * attention_mask.unsqueeze(-1)
+    
+    summed = torch.sum(masked_embeddings, dim=1)  # shape: (1, 768)
+    counts = torch.sum(attention_mask, dim=1, keepdim=True)  # shape: (1, 1)
+    mean_pooled = summed / counts  # shape: (1, 768)
+    
+    return mean_pooled.squeeze(0).numpy()  # shape: (768,)
 
 
 def compare_similarities(texts, queries, tfidf_sim, glove_embeddings,
@@ -63,7 +107,55 @@ def compare_similarities(texts, queries, tfidf_sim, glove_embeddings,
                       "glove": [(text, score), ...],
                       "bert":  [(text, score), ...]}}
     """
-    pass
+    import torch
+    
+    results = {}
+    
+    for query in queries:
+
+        query_idx = texts.index(query)
+        
+        tfidf_scores = tfidf_sim[query_idx]
+        tfidf_results = []
+        for i, score in enumerate(tfidf_scores):
+            if i != query_idx:  
+                tfidf_results.append((texts[i], score))
+
+        tfidf_results.sort(key=lambda x: x[1], reverse=True)
+        
+        query_glove = text_to_glove(query, glove_embeddings)
+        glove_results = []
+        for i, text in enumerate(texts):
+            if i != query_idx:  
+                text_glove = text_to_glove(text, glove_embeddings)
+
+                similarity = np.dot(query_glove, text_glove) / (
+                    np.linalg.norm(query_glove) * np.linalg.norm(text_glove)
+                )
+                glove_results.append((text, similarity))
+        glove_results.sort(key=lambda x: x[1], reverse=True)
+        
+
+
+        query_bert = extract_bert_embedding(query, bert_tokenizer, bert_model)
+        bert_results = []
+        for i, text in enumerate(texts):
+            if i != query_idx:  
+                text_bert = extract_bert_embedding(text, bert_tokenizer, bert_model)
+
+                similarity = np.dot(query_bert, text_bert) / (
+                    np.linalg.norm(query_bert) * np.linalg.norm(text_bert)
+                )
+                bert_results.append((text, similarity))
+        bert_results.sort(key=lambda x: x[1], reverse=True)
+        
+        results[query] = {
+            "tfidf": tfidf_results[:3],
+            "glove": glove_results[:3], 
+            "bert": bert_results[:3]
+        }
+    
+    return results
 
 
 if __name__ == "__main__":
@@ -72,7 +164,7 @@ if __name__ == "__main__":
 
     # Load data
     df = pd.read_csv("data/bbc_news.csv")
-    texts = df["text"].tolist()
+    texts = df["text"].tolist()  # Use all texts for full analysis
     print(f"Loaded {len(texts)} texts")
 
     # Task 1: TF-IDF
@@ -110,7 +202,7 @@ if __name__ == "__main__":
             texts, queries, tfidf_sim, glove, model, tokenizer
         )
         if comparison:
-            for q in list(comparison.keys())[:2]:
+            for q in list(comparison.keys()):  # Show all queries
                 print(f"\nQuery: {q[:80]}...")
                 for method in ["tfidf", "glove", "bert"]:
                     top = comparison[q].get(method, [])
